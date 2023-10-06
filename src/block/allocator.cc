@@ -114,7 +114,6 @@ auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
         first_free = first_free_optional.value();
         res = std::optional<block_id_t>(i * bm->block_size() + first_free);
       }
-
     } else {
       // TODO: Find the first free bit of current bitmap block
       // and store it in `res`.

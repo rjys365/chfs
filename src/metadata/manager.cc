@@ -1,8 +1,9 @@
+#include "metadata/manager.h"
+
 #include <vector>
 
 #include "common/bitmap.h"
 #include "metadata/inode.h"
-#include "metadata/manager.h"
 
 namespace chfs {
 
@@ -39,7 +40,7 @@ InodeManager::InodeManager(std::shared_ptr<BlockManager> bm,
 
   // 3. clear the bitmap blocks and table blocks
   for (u64 i = 0; i < this->n_table_blocks; ++i) {
-    bm->zero_block(i + 1); // 1: the super block
+    bm->zero_block(i + 1);  // 1: the super block
   }
 
   for (u64 i = 0; i < this->n_bitmap_blocks; ++i) {
@@ -96,11 +97,26 @@ auto InodeManager::allocate_inode(InodeType type, block_id_t bid)
 
       // TODO:
       // 1. Initialize the inode with the given type.
+      auto inode = Inode(type, bm->block_size());
+      std::vector<u8> buffer(bm->block_size());
+      inode.flush_to_buffer(buffer.data());
+      bm->write_block(bid, buffer.data());
+
       // 2. Setup the inode table.
+      auto inode_per_block = bm->block_size() / sizeof(block_id_t);
+      auto free_idx_value = free_idx.value();
+      auto table_block_no = free_idx_value / inode_per_block;
+      auto offset_in_table_block = free_idx_value % inode_per_block;
+      bm->read_block(1 + table_block_no, buffer.data());
+      auto table_ptr = reinterpret_cast<block_id_t *>(buffer.data());
+      table_ptr[offset_in_table_block] = bid;
+      bm->write_block(1 + table_block_no, buffer.data());
+
       // 3. Return the id of the allocated inode.
       //    You may have to use the `RAW_2_LOGIC` macro
       //    to get the result inode id.
-      UNIMPLEMENTED();
+      return ChfsResult<inode_id_t>(RAW_2_LOGIC(free_idx_value));
+      // UNIMPLEMENTED();
     }
   }
 
@@ -109,11 +125,18 @@ auto InodeManager::allocate_inode(InodeType type, block_id_t bid)
 
 // { Your code here }
 auto InodeManager::set_table(inode_id_t idx, block_id_t bid) -> ChfsNullResult {
-
   // TODO: Implement this function.
   // Fill `bid` into the inode table entry
   // whose index is `idx`.
-  UNIMPLEMENTED();
+  auto inode_per_block = bm->block_size() / sizeof(block_id_t);
+  auto table_block_no = idx / inode_per_block;
+  auto offset_in_table_block = idx % inode_per_block;
+  auto buffer = std::vector<u8>(bm->block_size());
+  bm->read_block(1 + table_block_no, buffer.data());
+  auto table_ptr = reinterpret_cast<block_id_t *>(buffer.data());
+  table_ptr[offset_in_table_block] = bid;
+  bm->write_block(1 + table_block_no, buffer.data());
+  // UNIMPLEMENTED();
 
   return KNullOk;
 }
@@ -127,7 +150,16 @@ auto InodeManager::get(inode_id_t id) -> ChfsResult<block_id_t> {
   // from the inode table. You may have to use
   // the macro `LOGIC_2_RAW` to get the inode
   // table index.
-  UNIMPLEMENTED();
+
+  auto raw_id = LOGIC_2_RAW(id);
+  auto inode_per_block = bm->block_size() / sizeof(block_id_t);
+  auto table_block_no = raw_id / inode_per_block;
+  auto offset_in_table_block = raw_id % inode_per_block;
+  auto buffer = std::vector<u8>(bm->block_size());
+  bm->read_block(1 + table_block_no, buffer.data());
+  auto table_ptr = reinterpret_cast<block_id_t *>(buffer.data());
+  res_block_id = table_ptr[offset_in_table_block];
+  // UNIMPLEMENTED();
 
   return ChfsResult<block_id_t>(res_block_id);
 }
@@ -212,7 +244,6 @@ auto InodeManager::read_inode(inode_id_t id, std::vector<u8> &buffer)
 
 // {Your code}
 auto InodeManager::free_inode(inode_id_t id) -> ChfsNullResult {
-
   // simple pre-checks
   if (id >= max_inode_supported - 1) {
     return ChfsNullResult(ErrorType::INVALID_ARG);
@@ -222,10 +253,23 @@ auto InodeManager::free_inode(inode_id_t id) -> ChfsNullResult {
   // 1. Clear the inode table entry.
   //    You may have to use macro `LOGIC_2_RAW`
   //    to get the index of inode table from `id`.
+  auto raw_id = LOGIC_2_RAW(id);
+  set_table(raw_id, 0);
+
   // 2. Clear the inode bitmap.
-  UNIMPLEMENTED();
+  auto inode_bitmap_start = 1 + this->n_table_blocks;
+  auto inode_bits_per_block = bm->block_size() * KBitsPerByte;
+  auto bitmap_block_no = raw_id / inode_bits_per_block;
+  auto offset_in_bitmap_block = raw_id % inode_bits_per_block;
+  auto buffer = std::vector<u8>(bm->block_size());
+  bm->read_block(inode_bitmap_start + bitmap_block_no, buffer.data());
+  auto bitmap = Bitmap(buffer.data(), bm->block_size());
+  bitmap.clear(offset_in_bitmap_block);
+  bm->write_block(inode_bitmap_start + bitmap_block_no, buffer.data());
+
+  // UNIMPLEMENTED();
 
   return KNullOk;
 }
 
-} // namespace chfs
+}  // namespace chfs
