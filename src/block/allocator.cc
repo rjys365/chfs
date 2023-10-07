@@ -93,6 +93,7 @@ auto BlockAllocator::free_block_cnt() const -> usize {
 
 // Your implementation
 auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
+  const auto total_bits_per_block = this->bm->block_size() * KBitsPerByte;
   std::vector<u8> buffer(bm->block_size());
 
   for (uint i = 0; i < this->bitmap_block_cnt; i++) {
@@ -112,7 +113,7 @@ auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
           bitmap.find_first_free_w_bound(this->last_block_num);
       if (first_free_optional.has_value()) {
         first_free = first_free_optional.value();
-        res = std::optional<block_id_t>(i * bm->block_size() + first_free);
+        res = std::optional<block_id_t>(i * total_bits_per_block + first_free);
       }
     } else {
       // TODO: Find the first free bit of current bitmap block
@@ -120,7 +121,7 @@ auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
       auto first_free_optional = bitmap.find_first_free();
       if (first_free_optional.has_value()) {
         first_free = first_free_optional.value();
-        res = std::optional<block_id_t>(i * bm->block_size() + first_free);
+        res = std::optional<block_id_t>(i * total_bits_per_block + first_free);
       }
     }
 
@@ -157,8 +158,9 @@ auto BlockAllocator::deallocate(block_id_t block_id) -> ChfsNullResult {
   // 2. Flush the changed bitmap block back to the block manager.
   // 3. Return ChfsNullResult(ErrorType::INVALID_ARG)
   //    if you find `block_id` is invalid (e.g. already freed).
-  auto bitmap_block_pos = block_id / bm->block_size();
-  auto pos_in_bitmap_block = block_id % bm->block_size();
+  const auto total_bits_per_block = this->bm->block_size() * KBitsPerByte;
+  auto bitmap_block_pos = block_id / total_bits_per_block;
+  auto pos_in_bitmap_block = block_id % total_bits_per_block;
   auto buffer = std::vector<u8>(bm->block_size());
   bm->read_block(this->bitmap_block_id + bitmap_block_pos, buffer.data());
   Bitmap bitmap = Bitmap(buffer.data(), bm->block_size());
