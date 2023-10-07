@@ -123,8 +123,16 @@ auto FileOperation::lookup(inode_id_t id, const char *name)
     -> ChfsResult<inode_id_t> {
   std::list<DirectoryEntry> list;
 
-  // TODO: Implement this function.
-  UNIMPLEMENTED();
+  auto read_res=this->read_file(id);
+  if(read_res.is_err()){
+    return ChfsResult<inode_id_t>(read_res.unwrap_error());
+  }
+  auto data=read_res.unwrap();
+  auto data_str=std::string(data.begin(),data.end());
+  parse_directory(data_str,list);
+  for(const auto &entry:list){
+    if(entry.name==name)return ChfsResult<inode_id_t>(entry.id);
+  }
 
   return ChfsResult<inode_id_t>(ErrorType::NotExist);
 }
@@ -138,9 +146,32 @@ auto FileOperation::mk_helper(inode_id_t id, const char *name, InodeType type)
   //    If already exist, return ErrorType::AlreadyExist.
   // 2. Create the new inode.
   // 3. Append the new entry to the parent directory.
-  UNIMPLEMENTED();
+  auto lookup_res = this->lookup(id,name);
+  if(lookup_res.is_err()&&lookup_res.unwrap_error()!=ErrorType::NotExist){
+    return ChfsResult<inode_id_t>(lookup_res.unwrap_error());
+  }
+  if(lookup_res.is_ok()){
+    return ChfsResult<inode_id_t>(ErrorType::AlreadyExist);
+  }
+  auto alloc_res = this->alloc_inode(type);
+  if(alloc_res.is_err()){
+    return ChfsResult<inode_id_t>(lookup_res.unwrap_error());
+  }
+  auto new_inode_id=alloc_res.unwrap();
+  auto read_res=this->read_file(id);
+  if(read_res.is_err()){
+    return ChfsResult<inode_id_t>(read_res.unwrap_error());
+  }
+  auto data=read_res.unwrap();
+  auto data_str=std::string(data.begin(),data.end());
+  auto data_str_new=append_to_directory(data_str,name,new_inode_id);
+  auto data_new=std::vector<u8>(data_str_new.begin(),data_str_new.end());
+  auto write_res=this->write_file(id,data_new);
+  if(write_res.is_err()){
+    return ChfsResult<inode_id_t>(write_res.unwrap_error());
+  }
 
-  return ChfsResult<inode_id_t>(static_cast<inode_id_t>(0));
+  return ChfsResult<inode_id_t>(new_inode_id);
 }
 
 // {Your code here}
@@ -150,8 +181,25 @@ auto FileOperation::unlink(inode_id_t parent, const char *name)
   // TODO: 
   // 1. Remove the file, you can use the function `remove_file`
   // 2. Remove the entry from the directory.
-  UNIMPLEMENTED();
-  
+  auto lookup_res=this->lookup(parent,name);
+  if(lookup_res.is_err()){
+    return ChfsNullResult(lookup_res.unwrap_error());
+  }
+  auto child_inode_id=lookup_res.unwrap();
+  this->remove_file(child_inode_id);
+  auto read_res=this->read_file(parent);
+  if(read_res.is_err()){
+    return ChfsNullResult(read_res.unwrap_error());
+  }
+  auto data=read_res.unwrap();
+  auto data_str=std::string(data.begin(),data.end());
+  auto data_str_new=rm_from_directory(data_str,name);
+  auto data_new=std::vector<u8>(data_str_new.begin(),data_str_new.end());
+  auto write_res=this->write_file(parent,data_new);
+  if(write_res.is_err()){
+    return ChfsNullResult(write_res.unwrap_error());
+  }
+
   return KNullOk;
 }
 
