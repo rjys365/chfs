@@ -92,12 +92,12 @@ auto BlockManager::write_block(block_id_t block_id, const u8 *data)
       return KNullOk;
     }
   }
-  
 
   u64 start_byte_index=block_id*this->block_size();
   for(u64 block_offset=0;block_offset<this->block_size();block_offset++){
     this->block_data[start_byte_index+block_offset]=data[block_offset];
   }
+
 
   this->write_fail_cnt++;
   return KNullOk;
@@ -118,7 +118,7 @@ auto BlockManager::write_partial_block(block_id_t block_id, const u8 *data,
   for(u64 block_offset=offset;block_offset<offset+len;block_offset++){
     this->block_data[start_byte_index+block_offset]=data[block_offset];
   }
-  
+
   this->write_fail_cnt++;
   return KNullOk;
 }
