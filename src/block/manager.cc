@@ -94,8 +94,11 @@ auto BlockManager::write_block(block_id_t block_id, const u8 *data)
   }
   
 
-  // TODO: Implement this function.
-  UNIMPLEMENTED();
+  u64 start_byte_index=block_id*this->block_size();
+  for(u64 block_offset=0;block_offset<this->block_size();block_offset++){
+    this->block_data[start_byte_index+block_offset]=data[block_offset];
+  }
+
   this->write_fail_cnt++;
   return KNullOk;
 }
@@ -110,24 +113,29 @@ auto BlockManager::write_partial_block(block_id_t block_id, const u8 *data,
     }
   }
 
-  // TODO: Implement this function.
-  UNIMPLEMENTED();
+  CHFS_ASSERT((offset+len)<this->block_size(),"Length too big in write_partial_block");
+  u64 start_byte_index=block_id*this->block_size();
+  for(u64 block_offset=offset;block_offset<offset+len;block_offset++){
+    this->block_data[start_byte_index+block_offset]=data[block_offset];
+  }
+  
   this->write_fail_cnt++;
   return KNullOk;
 }
 
 auto BlockManager::read_block(block_id_t block_id, u8 *data) -> ChfsNullResult {
-
-  // TODO: Implement this function.
-  UNIMPLEMENTED();
-
+  u64 start_byte_index=block_id*this->block_size();
+  for(u64 block_offset=0;block_offset<this->block_size();block_offset++){
+    data[block_offset]=this->block_data[start_byte_index+block_offset];
+  }
   return KNullOk;
 }
 
 auto BlockManager::zero_block(block_id_t block_id) -> ChfsNullResult {
-  
-  // TODO: Implement this function.
-  UNIMPLEMENTED();
+  u64 start_byte_index=block_id*this->block_size();
+  for(u64 block_offset=0;block_offset<this->block_size();block_offset++){
+    this->block_data[start_byte_index+block_offset]=0;
+  }
 
   return KNullOk;
 }
