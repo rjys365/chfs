@@ -58,33 +58,46 @@ DataServer::~DataServer() { server_.reset(); }
 auto DataServer::read_data(block_id_t block_id, usize offset, usize len,
                            version_t version) -> std::vector<u8> {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
-  return {};
+  // TODO: Implement version.
+  usize block_siz=this->block_allocator_->bm->block_size();
+  if(offset+len>=block_siz)return {};
+  std::vector<u8> buffer;
+  buffer.resize(block_siz);
+  this->block_allocator_->bm->read_block(block_id,buffer.data());
+  std::vector<u8> result(buffer.begin()+offset,buffer.begin()+len+offset);
+  return result;
 }
 
 // {Your code here}
 auto DataServer::write_data(block_id_t block_id, usize offset,
                             std::vector<u8> &buffer) -> bool {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
-  return false;
+  usize block_siz=this->block_allocator_->bm->block_size();
+  usize len=buffer.size();
+  if(offset+len>=block_siz)return false;
+  auto write_result=this->block_allocator_->bm->write_partial_block(block_id,buffer.data(),offset,buffer.size());
+  if(write_result.is_err())return false;
+  return true;
 }
 
 // {Your code here}
 auto DataServer::alloc_block() -> std::pair<block_id_t, version_t> {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
+  // TODO: Implement version.
+  auto allocate_result=this->block_allocator_->allocate();
+  if(allocate_result.is_ok()){
+    return std::make_pair(allocate_result.unwrap(),0u);
+  }
   return {};
 }
 
 // {Your code here}
 auto DataServer::free_block(block_id_t block_id) -> bool {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
+  auto free_result=this->block_allocator_->deallocate(block_id);
+  if(free_result.is_ok()){
+    return true;
+  }
   return false;
 }
 } // namespace chfs
