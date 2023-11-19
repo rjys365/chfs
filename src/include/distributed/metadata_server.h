@@ -2,9 +2,9 @@
 //
 //                         Chfs
 //
-// dataserver.h
+// metadata_server.h
 //
-// Identification: src/include/distributed/dataserver.h
+// Identification: src/include/distributed/metadata_server.h
 //
 //
 //===----------------------------------------------------------------------===//
