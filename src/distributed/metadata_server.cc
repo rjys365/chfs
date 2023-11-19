@@ -127,6 +127,7 @@ auto MetadataServer::mknode(u8 type, inode_id_t parent, const std::string &name)
     -> inode_id_t {
   // check if the inode is a directory
   const auto block_size = this->operation_->block_manager_->block_size();
+  std::lock_guard parent_lock(inode_locks[parent % LOCK_CNT]);
   std::vector<u8> inode_vec(block_size);
   auto read_inode_res =
       this->operation_->inode_manager_->read_inode(parent, inode_vec);
@@ -135,6 +136,7 @@ auto MetadataServer::mknode(u8 type, inode_id_t parent, const std::string &name)
   if (inode_p->get_type() != InodeType::Directory) return 0;
 
   // call the mk_helper of FileOperation to do this
+  std::lock_guard table_lock(inode_table_lock);
   auto result = this->operation_->mk_helper(parent, name.c_str(),
                                             static_cast<chfs::InodeType>(type));
   if (result.is_ok()) return result.unwrap();
@@ -146,6 +148,7 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
     -> bool {
   // check if the inode is a directory
   const auto block_size = this->operation_->block_manager_->block_size();
+  std::lock_guard parent_lock(inode_locks[parent % LOCK_CNT]);
   std::vector<u8> inode_vec(block_size);
   auto read_inode_res =
       this->operation_->inode_manager_->read_inode(parent, inode_vec);
@@ -153,6 +156,7 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
   Inode *inode_p = reinterpret_cast<Inode *>(inode_vec.data());
   if (inode_p->get_type() != InodeType::Directory) return 0;
 
+  std::lock_guard table_lock(inode_table_lock);
   auto result = this->operation_->unlink(parent, name.c_str());
   if (result.is_ok()) return true;
 
@@ -164,6 +168,7 @@ auto MetadataServer::lookup(inode_id_t parent, const std::string &name)
     -> inode_id_t {
   // check if the inode is a directory
   const auto block_size = this->operation_->block_manager_->block_size();
+  std::lock_guard parent_lock(inode_locks[parent % LOCK_CNT]);
   std::vector<u8> inode_vec(block_size);
   auto read_inode_res =
       this->operation_->inode_manager_->read_inode(parent, inode_vec);
@@ -188,6 +193,7 @@ auto calculate_block_cnt(u64 file_sz, u64 block_sz) -> u64 {
 auto MetadataServer::get_block_map(inode_id_t id) -> std::vector<BlockInfo> {
   const auto block_size = this->operation_->block_manager_->block_size();
   std::vector<u8> inode_vec(block_size);
+  std::lock_guard inode_lock(inode_locks[id % LOCK_CNT]);
   auto read_inode_res =
       this->operation_->inode_manager_->read_inode(id, inode_vec);
   if (read_inode_res.is_err()) {
@@ -213,6 +219,7 @@ auto MetadataServer::get_block_map(inode_id_t id) -> std::vector<BlockInfo> {
 auto MetadataServer::allocate_block(inode_id_t id) -> BlockInfo {
   // read the inode
   const auto block_size = this->operation_->block_manager_->block_size();
+  std::lock_guard inode_lock(inode_locks[id % LOCK_CNT]);
   std::vector<u8> inode_vec(block_size);
   auto read_inode_res =
       this->operation_->inode_manager_->read_inode(id, inode_vec);
@@ -256,6 +263,7 @@ auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
   // read the inode and check if it is a file
   const auto block_size = this->operation_->block_manager_->block_size();
   std::vector<u8> inode_vec(block_size);
+  std::lock_guard inode_lock(inode_locks[id % LOCK_CNT]);
   auto read_inode_res =
       this->operation_->inode_manager_->read_inode(id, inode_vec);
   if (read_inode_res.is_err()) return false;
@@ -289,9 +297,13 @@ auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
   for (chfs::u32 i = block_idx_to_remove; i < block_num - 1; i++) {
     block_info_p[i] = block_info_p[i + 1];
   }
-  chfs::u64 new_file_size = ((block_idx_to_remove == block_num - 1ul)
-                                 ? (file_size - file_size % block_size)
-                                 : (file_size - block_size));
+  // chfs::u64 new_file_size = ((block_idx_to_remove == block_num - 1ul)
+  //                                ? (file_size % block_size == 0
+  //                                       ? (file_size - block_size)
+  //                                       : (file_size - file_size %
+  //                                       block_size))
+  //                                : (file_size - block_size));
+  chfs::u64 new_file_size = file_size - block_size;
   inode_p->inner_attr.size = new_file_size;
   inode_p->inner_attr.ctime = inode_p->inner_attr.mtime = time(0);
 
@@ -306,6 +318,7 @@ auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
 auto MetadataServer::readdir(inode_id_t node)
     -> std::vector<std::pair<std::string, inode_id_t>> {
   const auto block_size = this->operation_->block_manager_->block_size();
+  std::lock_guard inode_lock(inode_locks[node % LOCK_CNT]);
   std::vector<u8> inode_vec(block_size);
   auto read_inode_res =
       this->operation_->inode_manager_->read_inode(node, inode_vec);
@@ -328,6 +341,7 @@ auto MetadataServer::readdir(inode_id_t node)
 auto MetadataServer::get_type_attr(inode_id_t id)
     -> std::tuple<u64, u64, u64, u64, u8> {
   const auto block_size = this->operation_->block_manager_->block_size();
+  std::lock_guard inode_lock(inode_locks[id % LOCK_CNT]);
   std::vector<u8> inode_vec(block_size);
   auto read_inode_res =
       this->operation_->inode_manager_->read_inode(id, inode_vec);
