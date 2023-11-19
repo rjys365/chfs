@@ -113,7 +113,7 @@ auto BlockManager::write_partial_block(block_id_t block_id, const u8 *data,
     }
   }
 
-  CHFS_ASSERT((offset+len)<this->block_size(),"Length too big in write_partial_block");
+  CHFS_ASSERT((offset+len)<=this->block_size(),"Length too big in write_partial_block");
   u64 start_byte_index=block_id*this->block_size();
   for(u64 block_offset=offset;block_offset<offset+len;block_offset++){
     this->block_data[start_byte_index+block_offset]=data[block_offset-offset];

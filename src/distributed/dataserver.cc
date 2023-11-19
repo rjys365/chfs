@@ -97,7 +97,7 @@ auto DataServer::read_data(block_id_t block_id, usize offset, usize len,
   if (this->get_block_version(block_id) != version)
     return {};  // version mismatch
   usize block_siz = this->block_allocator_->bm->block_size();
-  if (offset + len >= block_siz) return {};
+  if (offset + len > block_siz) return {};
   std::vector<u8> buffer;
   buffer.resize(block_siz);
   this->block_allocator_->bm->read_block(block_id, buffer.data());
@@ -112,7 +112,7 @@ auto DataServer::write_data(block_id_t block_id, usize offset,
   // TODO: Implement this function.
   usize block_siz = this->block_allocator_->bm->block_size();
   usize len = buffer.size();
-  if (offset + len >= block_siz) return false;
+  if (offset + len > block_siz) return false;
   auto write_result = this->block_allocator_->bm->write_partial_block(
       block_id, buffer.data(), offset, buffer.size());
   if (write_result.is_err()) return false;
