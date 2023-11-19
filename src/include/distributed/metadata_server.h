@@ -55,6 +55,7 @@ namespace chfs {
 const u8 RegularFileType = 1;
 const u8 DirectoryType = 2;
 
+// remember to alse update this in inode.h if it is changed in the future
 using BlockInfo = std::tuple<block_id_t, mac_id_t, version_t>;
 
 class MetadataServer {
