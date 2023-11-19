@@ -144,6 +144,15 @@ auto MetadataServer::mknode(u8 type, inode_id_t parent, const std::string &name)
 // {Your code here}
 auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
     -> bool {
+  // check if the inode is a directory
+  const auto block_size = this->operation_->block_manager_->block_size();
+  std::vector<u8> inode_vec(block_size);
+  auto read_inode_res =
+      this->operation_->inode_manager_->read_inode(parent, inode_vec);
+  if (read_inode_res.is_err()) return {};
+  Inode *inode_p = reinterpret_cast<Inode *>(inode_vec.data());
+  if (inode_p->get_type() != InodeType::Directory) return 0;
+
   auto result = this->operation_->unlink(parent, name.c_str());
   if (result.is_ok()) return true;
 
@@ -153,6 +162,15 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
 // {Your code here}
 auto MetadataServer::lookup(inode_id_t parent, const std::string &name)
     -> inode_id_t {
+  // check if the inode is a directory
+  const auto block_size = this->operation_->block_manager_->block_size();
+  std::vector<u8> inode_vec(block_size);
+  auto read_inode_res =
+      this->operation_->inode_manager_->read_inode(parent, inode_vec);
+  if (read_inode_res.is_err()) return {};
+  Inode *inode_p = reinterpret_cast<Inode *>(inode_vec.data());
+  if (inode_p->get_type() != InodeType::Directory) return 0;
+
   auto result = this->operation_->lookup(parent, name.c_str());
   if (result.is_ok()) {
     return result.unwrap();
@@ -176,6 +194,9 @@ auto MetadataServer::get_block_map(inode_id_t id) -> std::vector<BlockInfo> {
     return {};
   }
   Inode *inode_p = reinterpret_cast<Inode *>(inode_vec.data());
+  if (inode_p->get_type() != InodeType::FILE)
+    return {};  // should not read a directory as a file
+
   auto file_size = inode_p->get_size();
   auto block_num = calculate_block_cnt(file_size, block_size);
   std::vector<BlockInfo> result = std::vector<BlockInfo>();
@@ -284,6 +305,15 @@ auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
 // {Your code here}
 auto MetadataServer::readdir(inode_id_t node)
     -> std::vector<std::pair<std::string, inode_id_t>> {
+  const auto block_size = this->operation_->block_manager_->block_size();
+  std::vector<u8> inode_vec(block_size);
+  auto read_inode_res =
+      this->operation_->inode_manager_->read_inode(node, inode_vec);
+  if (read_inode_res.is_err()) return {};
+  Inode *inode_p = reinterpret_cast<Inode *>(inode_vec.data());
+  if (inode_p->get_type() != InodeType::Directory)
+    return {};  // should not read a file as a directory
+
   std::list<DirectoryEntry> dir_list;
   auto read_dir_res = read_directory(this->operation_.get(), node, dir_list);
   if (read_dir_res.is_err()) return {};
