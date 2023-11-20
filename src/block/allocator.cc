@@ -92,12 +92,13 @@ auto BlockAllocator::free_block_cnt() const -> usize {
 }
 
 // Your implementation
-auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
+auto BlockAllocator::allocate(std::vector<std::shared_ptr<BlockOperation>> *vec) -> ChfsResult<block_id_t> {
   const auto total_bits_per_block = this->bm->block_size() * KBitsPerByte;
   std::vector<u8> buffer(bm->block_size());
 
   for (uint i = 0; i < this->bitmap_block_cnt; i++) {
-    bm->read_block(i + this->bitmap_block_id, buffer.data());
+    auto read_res=bm->read_block(i + this->bitmap_block_id, buffer.data());
+    if(read_res.is_err())return ChfsResult<block_id_t>(read_res.unwrap_error());
     auto bitmap = Bitmap(buffer.data(), bm->block_size());
 
     // The index of the allocated bit inside current bitmap block.
@@ -135,7 +136,8 @@ auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
       // 2. Flush the changed bitmap block back to the block manager.
       // 3. Calculate the value of `retval`.
       bitmap.set(first_free);
-      bm->write_block(i + this->bitmap_block_id, buffer.data());
+      auto write_res=bm->write_block(i + this->bitmap_block_id, buffer.data(),vec);
+      if(write_res.is_err())return ChfsResult<block_id_t>(write_res.unwrap_error());
       retval = res.value();
 
       return ChfsResult<block_id_t>(retval);
@@ -145,7 +147,7 @@ auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
 }
 
 // Your implementation
-auto BlockAllocator::deallocate(block_id_t block_id) -> ChfsNullResult {
+auto BlockAllocator::deallocate(block_id_t block_id,std::vector<std::shared_ptr<BlockOperation>> *vec) -> ChfsNullResult {
   if (block_id >= this->bm->total_blocks()) {
     return ChfsNullResult(ErrorType::INVALID_ARG);
   }
@@ -168,7 +170,7 @@ auto BlockAllocator::deallocate(block_id_t block_id) -> ChfsNullResult {
     return ChfsNullResult(ErrorType::INVALID_ARG);
   }
   bitmap.clear(pos_in_bitmap_block);
-  bm->write_block(this->bitmap_block_id + bitmap_block_pos, buffer.data());
+  bm->write_block(this->bitmap_block_id + bitmap_block_pos, buffer.data(),vec);
 
   return KNullOk;
 }
