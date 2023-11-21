@@ -123,6 +123,7 @@ auto DataServer::write_data(block_id_t block_id, usize offset,
 auto DataServer::alloc_block() -> std::pair<block_id_t, version_t> {
   // TODO: Implement this function.
   // TODO: Implement version.
+  std::lock_guard lock(this->allocator_lock);
   auto allocate_result = this->block_allocator_->allocate();
   if (allocate_result.is_err()) return {};
   auto block_id = allocate_result.unwrap();
@@ -133,6 +134,7 @@ auto DataServer::alloc_block() -> std::pair<block_id_t, version_t> {
 // {Your code here}
 auto DataServer::free_block(block_id_t block_id) -> bool {
   // TODO: Implement this function.
+  std::lock_guard lock(this->allocator_lock);
   update_block_version(block_id);
   auto free_result = this->block_allocator_->deallocate(block_id);
   if (free_result.is_ok()) {
