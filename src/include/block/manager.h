@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "common/config.h"
@@ -21,6 +22,8 @@ namespace chfs {
 // TODO
 
 class BlockIterator;
+class BlockOperation;
+struct PackedLogEntry;
 
 /**
  * BlockManager implements a block device to read/write block devices
@@ -29,18 +32,22 @@ class BlockIterator;
 class BlockManager {
   friend class BlockIterator;
 
-protected:
+ protected:
   const usize block_sz = 4096;
 
   std::string file_name_;
   int fd;
   u8 *block_data;
   usize block_cnt;
-  bool in_memory; // whether we use in-memory to emulate the block manager
+  bool in_memory;  // whether we use in-memory to emulate the block manager
   bool maybe_failed;
   usize write_fail_cnt;
 
-public:
+  const usize BLOCKS_RESERVED_FOR_LOGGING = 1024;
+
+  bool log_enabled = false;
+
+ public:
   /**
    * Creates a new block manager that writes to a file-backed block device.
    * @param block_file the file name of the  file to write to
@@ -69,7 +76,7 @@ public:
   /**
    * Creates a new block manager that writes to a file-backed block device.
    * It reserves some blocks for recording logs.
-   * 
+   *
    * @param block_file the file name of the  file to write to
    * @param block_cnt the number of blocks in the device
    * @param is_log_enabled whether to enable log
@@ -84,14 +91,17 @@ public:
    * @param block_id id of the block
    * @param block_data raw block data
    */
-  virtual auto write_block(block_id_t block_id, const u8 *block_data)
+  virtual auto write_block(block_id_t block_id, const u8 *block_data,
+                           std::vector<std::shared_ptr<BlockOperation>> *vec = nullptr)
       -> ChfsNullResult;
 
   /**
    * Write a partial block to the internal block device.
    */
   virtual auto write_partial_block(block_id_t block_id, const u8 *block_data,
-                                   usize offset, usize len) -> ChfsNullResult;
+                                   usize offset, usize len,
+                                   std::vector<std::shared_ptr<BlockOperation>> *vec = nullptr)
+      -> ChfsNullResult;
 
   /**
    * Read a block to the internal block device.
@@ -109,6 +119,11 @@ public:
 
   auto total_storage_sz() const -> usize {
     return this->block_cnt * this->block_sz;
+  }
+
+  auto total_storage_sz_w_log() const -> usize {
+    return (this->block_cnt + this->BLOCKS_RESERVED_FOR_LOGGING) *
+           this->block_sz;
   }
 
   /**
@@ -139,9 +154,26 @@ public:
   /**
    * Mark the block manager as may fail state
    */
-  auto set_may_fail(bool may_fail) -> void {
-    this->maybe_failed = may_fail;
-  }
+  auto set_may_fail(bool may_fail) -> void { this->maybe_failed = may_fail; }
+
+  auto read_bytes_from_log_area(usize start_byte_idx, usize length)
+      -> std::vector<u8>;
+
+  auto write_bytes_to_log_area(usize start_byte_idx, std::vector<u8> data)
+      -> bool;
+
+  auto get_log_area_start_end_byte_idx() -> std::pair<usize, usize>;
+
+  // if some value is 0, don't update it
+  auto set_log_area_start_end_byte_idx(usize start, usize end) -> bool;
+
+  auto write_log_entry(std::vector<u8> entry_vec) -> bool;
+
+  auto get_log_entries() -> std::vector<PackedLogEntry>;
+
+  auto write_partial_block_wo_failure(block_id_t block_id, const u8 *data,
+                                      usize offset, usize len)
+      -> ChfsNullResult;
 };
 
 /**
@@ -158,7 +190,7 @@ class BlockIterator {
 
   std::vector<u8> buffer;
 
-public:
+ public:
   /**
    * Creates a new block iterator.
    *
@@ -190,20 +222,21 @@ public:
   /**
    *  Assumption: a prior call of has_next() must return true
    */
-  auto flush_cur_block() -> ChfsNullResult {
+  auto flush_cur_block(std::vector<std::shared_ptr<BlockOperation>> *vec=nullptr) -> ChfsNullResult {
     auto target_block_id =
         this->start_block_id + this->cur_block_off / bm->block_sz;
-    return this->bm->write_block(target_block_id, this->buffer.data());
+    return this->bm->write_block(target_block_id, this->buffer.data(),vec);
   }
 
   auto get_cur_byte() const -> u8 {
     return this->buffer[this->cur_block_off % bm->block_sz];
   }
 
-  template <typename T> auto unsafe_get_value_ptr() -> T * {
+  template <typename T>
+  auto unsafe_get_value_ptr() -> T * {
     return reinterpret_cast<T *>(this->buffer.data() +
                                  this->cur_block_off % bm->block_sz);
   }
 };
 
-} // namespace chfs
+}  // namespace chfs
