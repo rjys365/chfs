@@ -150,6 +150,8 @@ auto MetadataServer::mknode(u8 type, inode_id_t parent, const std::string &name)
     this->commit_log->append_log(txn_id, op_vec);
     auto flush_result = this->operation_->block_manager_->flush_ops(&op_vec);
     if (flush_result.is_err()) return 0;
+    this->commit_log->commit_log(txn_id);
+    this->commit_log->checkpoint();
   }
 
   if (result.is_ok()) return result.unwrap();
@@ -183,6 +185,8 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
     this->commit_log->append_log(txn_id, op_vec);
     auto flush_result = this->operation_->block_manager_->flush_ops(&op_vec);
     if (flush_result.is_err()) return 0;
+    this->commit_log->commit_log(txn_id);
+    this->commit_log->checkpoint();
   }
 
   if (result.is_ok()) return true;

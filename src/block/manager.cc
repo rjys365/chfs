@@ -109,7 +109,7 @@ BlockManager::BlockManager(const std::string &file, usize block_cnt,
     if (will_init_log)
       this->set_log_area_start_end_byte_idx(OFFSET_OF_LOGGING_AREA,
                                             OFFSET_OF_LOGGING_AREA + 1);
-      this->set_max_txn_id(0);
+    this->set_max_txn_id(0);
     this->log_enabled = true;
   } else {
     if (file_sz == 0) {
@@ -482,21 +482,27 @@ auto BlockManager::flush_ops(
   return this->flush();
 }
 
-auto BlockManager::set_max_txn_id(txn_id_t max_txn_id){
+void BlockManager::set_max_txn_id(txn_id_t max_txn_id) {
   std::lock_guard txn_id_lock(this->txn_id_mutex);
   std::vector<u8> buffer(sizeof(txn_id_t));
-  memcpy(buffer.data(),reinterpret_cast<u8 *>(&max_txn_id),sizeof(txn_id_t));
-  this->write_bytes_to_log_area(OFFSET_OF_MAX_TXN_ID,buffer);
+  memcpy(buffer.data(), reinterpret_cast<u8 *>(&max_txn_id), sizeof(txn_id_t));
+  this->write_bytes_to_log_area(OFFSET_OF_MAX_TXN_ID, buffer);
 }
 
-auto BlockManager::increase_and_get_txn_id() -> txn_id_t{
+auto BlockManager::increase_and_get_txn_id() -> txn_id_t {
   std::lock_guard txn_id_lock(this->txn_id_mutex);
-  auto buffer=this->read_bytes_from_log_area(OFFSET_OF_MAX_TXN_ID,sizeof(txn_id_t));
-  if(buffer.size()!=sizeof(txn_id_t))return 0;
-  auto id_p=reinterpret_cast<txn_id_t *>(buffer.data());
-  auto result=++(*id_p);
-  this->write_bytes_to_log_area(OFFSET_OF_MAX_TXN_ID,buffer);
+  auto buffer =
+      this->read_bytes_from_log_area(OFFSET_OF_MAX_TXN_ID, sizeof(txn_id_t));
+  if (buffer.size() != sizeof(txn_id_t)) return 0;
+  auto id_p = reinterpret_cast<txn_id_t *>(buffer.data());
+  auto result = ++(*id_p);
+  this->write_bytes_to_log_area(OFFSET_OF_MAX_TXN_ID, buffer);
   return result;
+}
+
+void BlockManager::reset_logging_area() {
+  set_log_area_start_end_byte_idx(OFFSET_OF_LOGGING_AREA,
+                                  OFFSET_OF_LOGGING_AREA + 1);
 }
 
 }  // namespace chfs

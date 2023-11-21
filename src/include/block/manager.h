@@ -185,9 +185,11 @@ class BlockManager {
   auto flush_ops(std::vector<std::shared_ptr<BlockOperation>> *log_vec)
       -> ChfsNullResult;
 
-  auto set_max_txn_id(txn_id_t max_txn_id);
+  void set_max_txn_id(txn_id_t max_txn_id);
 
   auto increase_and_get_txn_id() -> txn_id_t;
+
+  void reset_logging_area();
 };
 
 /**
