@@ -25,9 +25,6 @@
 #include "filesystem/operations.h"
 
 namespace chfs {
-constexpr usize LOG_ENTRY_SIZE_WITH_BLOCK_DATA =
-    16ul + DiskBlockSize; // TODO: change this
-
 
 /**
  * `BlockOperation` is an entry indicates an old block state and
@@ -81,7 +78,7 @@ struct LogEntry {
     switch (this->type) {
       case LogEntryType::BLOCK_CHANGE:
       case LogEntryType::INVALID_BLOCK_CHANGE: {
-        return LOG_ENTRY_SIZE_WITH_BLOCK_DATA;
+        return sizeof(LogEntry)+DiskBlockSize;
       }
       default:
         return sizeof(LogEntry);
@@ -119,6 +116,7 @@ struct PackedLogEntry {
     auto entry_data = result.data();
     auto result_p = reinterpret_cast<LogEntry *>(entry_data);
     result_p->type = this->type;
+    result_p->block_id = this->block_id;
     result_p->txn_id = this->txn_id;
     result_p->type = this->type;
     if (this->type == LogEntryType::BLOCK_CHANGE) {
@@ -127,7 +125,5 @@ struct PackedLogEntry {
     return result;
   }
 };
-
-
 
 }  // namespace chfs

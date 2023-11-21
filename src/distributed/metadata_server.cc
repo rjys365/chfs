@@ -137,8 +137,20 @@ auto MetadataServer::mknode(u8 type, inode_id_t parent, const std::string &name)
 
   // call the mk_helper of FileOperation to do this
   std::lock_guard table_lock(inode_table_lock);
+
+  std::vector<std::shared_ptr<BlockOperation>> op_vec;
+  if(is_log_enabled_){
+    this->operation_->block_manager_->start_logging(&op_vec);
+  }
   auto result = this->operation_->mk_helper(parent, name.c_str(),
                                             static_cast<chfs::InodeType>(type));
+  if(is_log_enabled_){
+    this->operation_->block_manager_->stop_logging();
+    this->commit_log->append_log(0,op_vec);
+    auto flush_result=this->operation_->block_manager_->flush_ops(&op_vec);
+    if(flush_result.is_err())return 0;
+  }
+  
   if (result.is_ok()) return result.unwrap();
   return 0;
 }
@@ -157,9 +169,21 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
   if (inode_p->get_type() != InodeType::Directory) return 0;
 
   std::lock_guard table_lock(inode_table_lock);
-  auto result = this->operation_->unlink(parent, name.c_str());
-  if (result.is_ok()) return true;
 
+  std::vector<std::shared_ptr<BlockOperation>> op_vec;
+  if(is_log_enabled_){
+    this->operation_->block_manager_->start_logging(&op_vec);
+  }
+
+  auto result = this->operation_->unlink(parent, name.c_str());
+  if(is_log_enabled_){
+    this->operation_->block_manager_->stop_logging();
+    this->commit_log->append_log(0,op_vec);
+    auto flush_result=this->operation_->block_manager_->flush_ops(&op_vec);
+    if(flush_result.is_err())return 0;
+  }
+
+  if (result.is_ok()) return true;
   return false;
 }
 

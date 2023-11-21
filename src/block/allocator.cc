@@ -92,7 +92,7 @@ auto BlockAllocator::free_block_cnt() const -> usize {
 }
 
 // Your implementation
-auto BlockAllocator::allocate(std::vector<std::shared_ptr<BlockOperation>> *vec) -> ChfsResult<block_id_t> {
+auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
   const auto total_bits_per_block = this->bm->block_size() * KBitsPerByte;
   std::vector<u8> buffer(bm->block_size());
 
@@ -136,7 +136,7 @@ auto BlockAllocator::allocate(std::vector<std::shared_ptr<BlockOperation>> *vec)
       // 2. Flush the changed bitmap block back to the block manager.
       // 3. Calculate the value of `retval`.
       bitmap.set(first_free);
-      auto write_res=bm->write_block(i + this->bitmap_block_id, buffer.data(),vec);
+      auto write_res=bm->write_block(i + this->bitmap_block_id, buffer.data());
       if(write_res.is_err())return ChfsResult<block_id_t>(write_res.unwrap_error());
       retval = res.value();
 
@@ -147,7 +147,7 @@ auto BlockAllocator::allocate(std::vector<std::shared_ptr<BlockOperation>> *vec)
 }
 
 // Your implementation
-auto BlockAllocator::deallocate(block_id_t block_id,std::vector<std::shared_ptr<BlockOperation>> *vec) -> ChfsNullResult {
+auto BlockAllocator::deallocate(block_id_t block_id) -> ChfsNullResult {
   if (block_id >= this->bm->total_blocks()) {
     return ChfsNullResult(ErrorType::INVALID_ARG);
   }
@@ -170,7 +170,7 @@ auto BlockAllocator::deallocate(block_id_t block_id,std::vector<std::shared_ptr<
     return ChfsNullResult(ErrorType::INVALID_ARG);
   }
   bitmap.clear(pos_in_bitmap_block);
-  bm->write_block(this->bitmap_block_id + bitmap_block_pos, buffer.data(),vec);
+  bm->write_block(this->bitmap_block_id + bitmap_block_pos, buffer.data());
 
   return KNullOk;
 }

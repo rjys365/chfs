@@ -23,6 +23,8 @@
 
 namespace chfs {
 
+class BlockOperation;
+
 /**
  * `MetadataServer` is the master server in chfs where the metadata is stored.
  *

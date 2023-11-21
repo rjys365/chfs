@@ -12,6 +12,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include "common/config.h"
@@ -44,8 +45,12 @@ class BlockManager {
   usize write_fail_cnt;
 
   const usize BLOCKS_RESERVED_FOR_LOGGING = 1024;
+  const usize OFFSET_OF_LOGGING_AREA = 2 * sizeof(usize) + sizeof(txn_id_t);
+  const usize OFFSET_OF_MAX_TXN_ID = 2 * sizeof(usize);
 
   bool log_enabled = false;
+  std::vector<std::shared_ptr<BlockOperation>> *now_logging_vec = nullptr;
+  std::mutex txn_id_mutex;
 
  public:
   /**
@@ -91,17 +96,14 @@ class BlockManager {
    * @param block_id id of the block
    * @param block_data raw block data
    */
-  virtual auto write_block(block_id_t block_id, const u8 *block_data,
-                           std::vector<std::shared_ptr<BlockOperation>> *vec = nullptr)
+  virtual auto write_block(block_id_t block_id, const u8 *block_data)
       -> ChfsNullResult;
 
   /**
    * Write a partial block to the internal block device.
    */
   virtual auto write_partial_block(block_id_t block_id, const u8 *block_data,
-                                   usize offset, usize len,
-                                   std::vector<std::shared_ptr<BlockOperation>> *vec = nullptr)
-      -> ChfsNullResult;
+                                   usize offset, usize len) -> ChfsNullResult;
 
   /**
    * Read a block to the internal block device.
@@ -174,6 +176,14 @@ class BlockManager {
   auto write_partial_block_wo_failure(block_id_t block_id, const u8 *data,
                                       usize offset, usize len)
       -> ChfsNullResult;
+
+  auto start_logging(std::vector<std::shared_ptr<BlockOperation>> *log_vec)
+      -> ChfsNullResult;
+
+  auto stop_logging() -> ChfsNullResult;
+
+  auto flush_ops(std::vector<std::shared_ptr<BlockOperation>> *log_vec)
+      -> ChfsNullResult;
 };
 
 /**
@@ -222,10 +232,10 @@ class BlockIterator {
   /**
    *  Assumption: a prior call of has_next() must return true
    */
-  auto flush_cur_block(std::vector<std::shared_ptr<BlockOperation>> *vec=nullptr) -> ChfsNullResult {
+  auto flush_cur_block() -> ChfsNullResult {
     auto target_block_id =
         this->start_block_id + this->cur_block_off / bm->block_sz;
-    return this->bm->write_block(target_block_id, this->buffer.data(),vec);
+    return this->bm->write_block(target_block_id, this->buffer.data());
   }
 
   auto get_cur_byte() const -> u8 {

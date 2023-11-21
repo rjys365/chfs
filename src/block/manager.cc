@@ -74,8 +74,7 @@ BlockManager::BlockManager(const std::string &file, usize block_cnt)
     initialize_file(this->fd, this->total_storage_sz_w_log());
   } else {
     this->block_cnt = file_sz / this->block_sz - BLOCKS_RESERVED_FOR_LOGGING;
-    CHFS_ASSERT(this->block_cnt=KDefaultBlockCnt,
-                "The file size mismatches");
+    CHFS_ASSERT(this->block_cnt = KDefaultBlockCnt, "The file size mismatches");
   }
 
   this->block_data =
@@ -108,8 +107,8 @@ BlockManager::BlockManager(const std::string &file, usize block_cnt,
         this->total_storage_sz() + BLOCKS_RESERVED_FOR_LOGGING * this->block_sz,
         PROT_READ | PROT_WRITE, MAP_SHARED, this->fd, 0));
     if (will_init_log)
-      this->set_log_area_start_end_byte_idx(2 * sizeof(usize),
-                                            2 * sizeof(usize) + 1);
+      this->set_log_area_start_end_byte_idx(OFFSET_OF_LOGGING_AREA,
+                                            OFFSET_OF_LOGGING_AREA + 1);
     this->log_enabled = true;
   } else {
     if (file_sz == 0) {
@@ -127,17 +126,17 @@ BlockManager::BlockManager(const std::string &file, usize block_cnt,
   CHFS_ASSERT(this->block_data != MAP_FAILED, "Failed to mmap the data");
 }
 
-auto BlockManager::write_block(
-    block_id_t block_id, const u8 *data,
-    std::vector<std::shared_ptr<BlockOperation>> *vec) -> ChfsNullResult {
-  if (vec) {
+auto BlockManager::write_block(block_id_t block_id, const u8 *data)
+    -> ChfsNullResult {
+  if (this->now_logging_vec) {
     auto siz = this->block_size();
     auto new_block_data_log = std::vector<u8>(this->block_size());
     for (u64 i = 0; i < siz; i++) {
       new_block_data_log[i] = data[i];
     }
-    vec->push_back(
+    this->now_logging_vec->push_back(
         std::make_shared<BlockOperation>(block_id, new_block_data_log));
+    return KNullOk;
   }
   if (this->maybe_failed && block_id < this->block_cnt) {
     if (this->write_fail_cnt >= 3) {
@@ -156,10 +155,10 @@ auto BlockManager::write_block(
   return KNullOk;
 }
 
-auto BlockManager::write_partial_block(
-    block_id_t block_id, const u8 *data, usize offset, usize len,
-    std::vector<std::shared_ptr<BlockOperation>> *vec) -> ChfsNullResult {
-  if (vec) {
+auto BlockManager::write_partial_block(block_id_t block_id, const u8 *data,
+                                       usize offset, usize len)
+    -> ChfsNullResult {
+  if (this->now_logging_vec) {
     auto siz = this->block_size();
     auto new_block_data_log = std::vector<u8>(this->block_size());
     u64 start_byte_index = block_id * this->block_size();
@@ -171,8 +170,9 @@ auto BlockManager::write_partial_block(
          block_offset++) {
       new_block_data_log[block_offset] = data[block_offset - offset];
     }
-    vec->push_back(
+    this->now_logging_vec->push_back(
         std::make_shared<BlockOperation>(block_id, new_block_data_log));
+    return KNullOk;
   }
 
   if (this->maybe_failed && block_id < this->block_cnt) {
@@ -208,6 +208,15 @@ auto BlockManager::write_partial_block_wo_failure(block_id_t block_id,
 }
 
 auto BlockManager::read_block(block_id_t block_id, u8 *data) -> ChfsNullResult {
+  if (this->now_logging_vec) {
+    for (auto iterator = now_logging_vec->rbegin();
+         iterator != now_logging_vec->rend(); iterator++) {
+      if ((*iterator)->block_id_ == block_id) {
+        memcpy(data, (*iterator)->new_block_state_.data(), this->block_size());
+        return KNullOk;
+      }
+    }
+  }
   u64 start_byte_index = block_id * this->block_size();
   for (u64 block_offset = 0; block_offset < this->block_size();
        block_offset++) {
@@ -217,6 +226,11 @@ auto BlockManager::read_block(block_id_t block_id, u8 *data) -> ChfsNullResult {
 }
 
 auto BlockManager::zero_block(block_id_t block_id) -> ChfsNullResult {
+  if (this->now_logging_vec) {
+    this->now_logging_vec->push_back(std::make_shared<BlockOperation>(
+        block_id, std::vector<u8>(this->block_size())));
+    return KNullOk;
+  }
   u64 start_byte_index = block_id * this->block_size();
   for (u64 block_offset = 0; block_offset < this->block_size();
        block_offset++) {
@@ -321,7 +335,7 @@ auto BlockManager::read_bytes_from_log_area(usize start_byte_idx, usize length)
     auto read_res = read_block(current_log_block_id, buffer.data());
     if (read_res.is_err()) return {};
     result.insert(result.end(), buffer.begin() + current_offset,
-                  buffer.begin() + current_read_length);
+                  buffer.begin() + current_offset + current_read_length);
     bytes_already_read += current_read_length;
     current_log_block_id++;
   }
@@ -413,8 +427,8 @@ auto BlockManager::write_log_entry(std::vector<u8> entry_vec) -> bool {
 
 auto BlockManager::get_log_entries() -> std::vector<PackedLogEntry> {
   // TODO: add circle, now just stops working when reaches end
-  auto current_byte_idx = 2 * sizeof(usize);
   const auto &[start_byte, end_byte] = get_log_area_start_end_byte_idx();
+  auto current_byte_idx = start_byte;
   auto result = std::vector<PackedLogEntry>();
   if (start_byte > end_byte) {
     return {};  // TODO: read the circular log entries
@@ -440,5 +454,33 @@ auto BlockManager::get_log_entries() -> std::vector<PackedLogEntry> {
   }
   return result;
 }
+
+auto BlockManager::start_logging(
+    std::vector<std::shared_ptr<BlockOperation>> *log_vec) -> ChfsNullResult {
+  if (log_enabled && log_vec != nullptr) {
+    this->now_logging_vec = log_vec;
+    return KNullOk;
+  }
+  return ChfsNullResult(ErrorType::INVALID_ARG);
+}
+
+auto BlockManager::stop_logging() -> ChfsNullResult {
+  if (this->now_logging_vec == nullptr)
+    return ChfsNullResult(ErrorType::INVALID_ARG);
+  this->now_logging_vec = nullptr;
+  return KNullOk;
+}
+
+auto BlockManager::flush_ops(
+    std::vector<std::shared_ptr<BlockOperation>> *log_vec) -> ChfsNullResult {
+  for (const auto &item : *log_vec) {
+    auto write_res =
+        this->write_block(item->block_id_, item->new_block_state_.data());
+    if (write_res.is_err()) return ChfsNullResult(write_res.unwrap_error());
+  }
+  return this->flush();
+}
+
+
 
 }  // namespace chfs
