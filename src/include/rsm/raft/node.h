@@ -24,6 +24,7 @@
 namespace chfs {
 
 const int RAFT_RETRY_MS_BASE = 200;
+const int RAFT_DISABLED_TIMER_INTERVAL = 1000;
 const int RAFT_LEADER_PING_INTERVAL = 100;
 
 enum class RaftTimerStatus { DISABLED, RESET, ENABLED };
@@ -382,8 +383,8 @@ auto RaftNode<StateMachine, Command>::stop() -> int {
   // leader_timer_lock.unlock();
   // leader_timer_cv.notify_all();
   // follower_timer_lock.unlock();
-  if(follower_timer_status==RaftTimerStatus::DISABLED)follower_timer_cv.notify_all();
-  if(leader_timer_status==RaftTimerStatus::DISABLED)follower_timer_cv.notify_all();
+  // if(follower_timer_status==RaftTimerStatus::DISABLED)follower_timer_cv.notify_all();
+  // if(leader_timer_status==RaftTimerStatus::DISABLED)follower_timer_cv.notify_all();
   background_ping->join();
   background_election->join();
   background_apply->join();
@@ -498,8 +499,10 @@ auto RaftNode<StateMachine, Command>::append_entries(
     RpcAppendEntriesArgs rpc_arg) -> AppendEntriesReply {
   /* Lab3: Your code here */
   std::unique_lock<std::mutex> lock(this->mtx);
-  RAFT_LOG("received append_entries from %d, term: %d, current_term on this node: %d ", rpc_arg.leader_id,
-           rpc_arg.term, current_term);
+  RAFT_LOG(
+      "received append_entries from %d, term: %d, current_term on this node: "
+      "%d ",
+      rpc_arg.leader_id, rpc_arg.term, current_term);
   AppendEntriesArgs<Command> arg =
       transform_rpc_append_entries_args<Command>(rpc_arg);
   if (arg.term < current_term) {
@@ -645,13 +648,16 @@ void RaftNode<StateMachine, Command>::run_background_election() {
       switch (follower_timer_status) {
         case RaftTimerStatus::DISABLED: {
           // RAFT_LOG("follower timer disabled");
-          follower_timer_cv.wait(follower_timer_lock);
+          int ms_to_wait = RAFT_DISABLED_TIMER_INTERVAL;
+          follower_timer_cv.wait_for(follower_timer_lock,
+                                     std::chrono::milliseconds(ms_to_wait));
           continue;
         }
         case RaftTimerStatus::RESET: {
           follower_timer_status = RaftTimerStatus::ENABLED;
           int ms_to_wait = retry_ms_distrib(rand_gen);
-          RAFT_LOG("follower timer reset, will be triggered after %dms", ms_to_wait);
+          RAFT_LOG("follower timer reset, will be triggered after %dms",
+                   ms_to_wait);
           follower_timer_cv.wait_for(follower_timer_lock,
                                      std::chrono::milliseconds(ms_to_wait));
           continue;
@@ -735,7 +741,9 @@ void RaftNode<StateMachine, Command>::run_background_ping() {
       switch (leader_timer_status) {
         case RaftTimerStatus::DISABLED: {
           // RAFT_LOG("leader timer disabled");
-          leader_timer_cv.wait(leader_timer_lock);
+          int ms_to_wait = RAFT_DISABLED_TIMER_INTERVAL;
+          leader_timer_cv.wait_for(leader_timer_lock,
+                                   std::chrono::milliseconds(ms_to_wait));
           continue;
         }
         case RaftTimerStatus::RESET: {
