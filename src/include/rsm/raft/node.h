@@ -187,11 +187,14 @@ class RaftNode {
 
   bool voted;
   int voted_for;
-  // TODO: log[]
 
   int commit_index;
   std::vector<unsigned char> has_voted_for_this;
   int candidate_vote_cnt;
+
+  // leader's state
+  std::vector<int> next_index;
+  std::vector<int> match_index;
 
   RaftTimerStatus follower_timer_status = RaftTimerStatus::RESET;
   RaftTimerStatus leader_timer_status = RaftTimerStatus::DISABLED;
@@ -251,6 +254,8 @@ RaftNode<StateMachine, Command>::RaftNode(int node_id,
   rpc_server->run(true, configs.size());
 
   has_voted_for_this.resize(configs.size());
+  next_index.resize(configs.size());
+  match_index.resize(configs.size());
 
   // random seed
   std::random_device rand_dev;
@@ -303,6 +308,11 @@ void RaftNode<StateMachine, Command>::change_role(
     case RaftRole::Leader: {
       // TODO
       RAFT_LOG("Changing to leader");
+      int cluster_size = node_configs.size();
+      for (size_t i = 0; i < cluster_size; i++) {
+        next_index[i] = log_storage->entry_cnt() + 1;
+        match_index[i] = 0;
+      }
       set_timer(follower_timer_mtx, follower_timer_cv, follower_timer_status,
                 RaftTimerStatus::DISABLED, caller_holding_follower_mtx);
       set_timer(leader_timer_mtx, leader_timer_cv, leader_timer_status,
@@ -350,9 +360,11 @@ auto RaftNode<StateMachine, Command>::start() -> int {
   thread_pool = std::make_unique<ThreadPool>(4);
 
   RAFT_LOG("starting");
-  log_storage = std::make_unique<RaftLog<Command>>(
-      std::make_shared<BlockManager>("raft_data_" + std::to_string(my_id)));
+  log_storage =
+      std::make_unique<RaftLog<Command>>(std::make_shared<BlockManager>(
+          "/tmp/raft_log/raft_data_" + std::to_string(my_id)));
   // TODO: init state machine
+  state = std::make_unique<StateMachine>();
 
   for (int i = 0; i < node_configs.size(); i++) {
     rpc_clients_map[i] = std::make_unique<RpcClient>(
@@ -414,7 +426,17 @@ auto RaftNode<StateMachine, Command>::new_command(std::vector<u8> cmd_data,
                                                   int cmd_size)
     -> std::tuple<bool, int, int> {
   /* Lab3: Your code here */
-  return std::make_tuple(false, -1, -1);
+  RAFT_LOG("new_command received");
+  std::unique_lock<std::mutex> lock(this->mtx);
+  if (this->role != RaftRole::Leader) {
+    RAFT_LOG("not leader, rejecting new_command");
+    return std::make_tuple(false, current_term, -1);
+  }
+  Command command;
+  command.deserialize(cmd_data, cmd_size);
+  int index = this->log_storage->append_command(current_term, command);
+  RAFT_LOG("new command appended at index: %d", index);
+  return std::make_tuple(true, current_term, index);
 }
 
 template <typename StateMachine, typename Command>
@@ -499,15 +521,16 @@ template <typename StateMachine, typename Command>
 auto RaftNode<StateMachine, Command>::append_entries(
     RpcAppendEntriesArgs rpc_arg) -> AppendEntriesReply {
   /* Lab3: Your code here */
-  std::unique_lock<std::mutex> lock(this->mtx);
   RAFT_LOG(
       "received append_entries from %d, term: %d, current_term on this node: "
       "%d ",
       rpc_arg.leader_id, rpc_arg.term, current_term);
+  std::unique_lock<std::mutex> lock(this->mtx);
   AppendEntriesArgs<Command> arg =
       transform_rpc_append_entries_args<Command>(rpc_arg);
   if (arg.term < current_term) {
-    RAFT_LOG("term too old, rejecting append_entries");
+    RAFT_LOG("term too old, rejecting append_entries from %d",
+             rpc_arg.leader_id);
     return AppendEntriesReply{current_term, false};
   }
 
@@ -520,6 +543,39 @@ auto RaftNode<StateMachine, Command>::append_entries(
     change_term(arg.term);
   }
 
+  int entry_cnt = log_storage->entry_cnt();
+
+  if (arg.prev_log_index != 0 &&
+      (arg.prev_log_index > entry_cnt ||
+       log_storage->get_entry(arg.prev_log_index).term != arg.prev_log_term)) {
+    RAFT_LOG("rejecting append_entries because of inconsistency");
+    return AppendEntriesReply{current_term, false};
+  }
+
+  RAFT_LOG(
+      "accepting append_entries, entries cnt: %d, current commit_index: %d, "
+      "leader's commit index: %d",
+      static_cast<int>(arg.log_entries.size()), commit_index,
+      arg.leader_commit_index);
+
+  int current_log_index = arg.prev_log_index + 1;
+
+  for (const auto &entry : arg.log_entries) {
+    log_storage->set_entry(current_log_index, entry.term, entry.command);
+    current_log_index++;
+  }
+
+  if (arg.leader_commit_index > commit_index) {
+    RAFT_LOG("commiting entries from %d to %d", commit_index + 1,
+             arg.leader_commit_index);
+    for (int i = commit_index + 1; i <= arg.leader_commit_index; i++) {
+      RaftLogEntry<Command> entry = log_storage->get_entry(i);
+      Command command = entry.command;
+      state->apply_log(command);
+    }
+    commit_index = arg.leader_commit_index;
+  }
+
   return AppendEntriesReply{current_term, true};
 
   // return AppendEntriesReply();
@@ -530,14 +586,24 @@ void RaftNode<StateMachine, Command>::handle_append_entries_reply(
     int node_id, const AppendEntriesArgs<Command> arg,
     const AppendEntriesReply reply) {
   /* Lab3: Your code here */
+  RAFT_LOG("received append_entries reply");
   std::unique_lock<std::mutex> lock(this->mtx);
-  if (!reply.success) {
+  if (reply.success) {
+    match_index[node_id] =
+        std::max(match_index[node_id],
+                 arg.prev_log_index + static_cast<int>(arg.log_entries.size()));
+    next_index[node_id] = match_index[node_id] + 1;
+  } else {
     if (reply.term > current_term) {
+      RAFT_LOG(
+          "append_entries rejected because term is too old, changing to "
+          "follower");
       change_term(reply.term);
       change_role(RaftRole::Follower);
       return;
     }
     // TODO: recursive send when inconsistency happens
+    next_index[node_id] = std::min(next_index[node_id], arg.prev_log_index);
   }
 
   return;
@@ -694,14 +760,40 @@ void RaftNode<StateMachine, Command>::run_background_commit() {
   // Only work for the leader.
 
   /* Uncomment following code when you finish */
-  // while (true) {
-  //     {
-  //         if (is_stopped()) {
-  //             return;
-  //         }
-  //         /* Lab3: Your code here */
-  //     }
-  // }
+  while (true) {
+    {
+      if (is_stopped()) {
+        return;
+      }
+      std::this_thread::sleep_for(
+          std::chrono::milliseconds(RAFT_RETRY_MS_BASE));
+      /* Lab3: Your code here */
+      std::unique_lock<std::mutex> lock(this->mtx);
+      if (role == RaftRole::Leader) {
+        RAFT_LOG("run_background_commit timer triggered and I'm leader");
+      } else {
+        continue;
+      }
+      for (int i = 0; i < node_configs.size(); i++) {
+        if (i == my_id) continue;
+        int prev_log_index = next_index[i] - 1;
+        int prev_log_term = log_storage->get_entry(prev_log_index).term;
+        int current_max_log_index = log_storage->entry_cnt();
+        if (prev_log_index == current_max_log_index) continue;
+        std::vector<RaftLogEntry<Command>> log_entries;
+        for (int idx = prev_log_index + 1; idx <= current_max_log_index;
+             idx++) {
+          log_entries.push_back(log_storage->get_entry(idx));
+        }
+        thread_pool->enqueue([=]() {
+          send_append_entries(
+              i, AppendEntriesArgs<Command>{current_term, my_id, prev_log_index,
+                                            prev_log_term, log_entries,
+                                            this->commit_index});
+        });
+      }
+    }
+  }
 
   return;
 }
@@ -713,14 +805,55 @@ void RaftNode<StateMachine, Command>::run_background_apply() {
   // Work for all the nodes.
 
   /* Uncomment following code when you finish */
-  // while (true) {
-  //     {
-  //         if (is_stopped()) {
-  //             return;
-  //         }
-  //         /* Lab3: Your code here */
-  //     }
-  // }
+  std::this_thread::sleep_for(
+      std::chrono::milliseconds(RAFT_RETRY_MS_BASE / 2));
+  while (true) {
+    {
+      if (is_stopped()) {
+        return;
+      }
+      /* Lab3: Your code here */
+      std::this_thread::sleep_for(
+          std::chrono::milliseconds(RAFT_RETRY_MS_BASE));
+      std::unique_lock<std::mutex> lock(this->mtx);
+      if (role != RaftRole::Leader) {
+        continue;
+      }
+      RAFT_LOG("run_background_apply timer triggered and I'm leader");
+      int node_cnt = node_configs.size();
+      for (int idx = log_storage->entry_cnt(); idx >= 1; idx--) {
+        RaftLogEntry<Command> entry = log_storage->get_entry(idx);
+        // no need to check older entries if this entry is not in this term
+        if (entry.term != current_term) break;
+        bool is_able_to_commit = false;
+        int match_node_cnt = 0;
+        for (int node_idx = 0; node_idx < node_cnt; node_idx++) {
+          if (node_idx == my_id || match_index[node_idx] >= idx) {
+            match_node_cnt++;
+          }
+          if (match_node_cnt > node_cnt / 2) {
+            is_able_to_commit = true;
+            break;
+          }
+        }
+        if (is_able_to_commit) {
+          RAFT_LOG("log index %d is able to commit, updating commit_index",
+                   idx);
+          if (idx > commit_index) {
+            for (int index_to_apply = commit_index + 1; index_to_apply <= idx;
+                 index_to_apply++) {
+              RaftLogEntry<Command> entry =
+                  log_storage->get_entry(index_to_apply);
+              Command command = entry.command;
+              state->apply_log(command);
+            }
+            commit_index = idx;
+          }
+          break;
+        }
+      }
+    }
+  }
 
   return;
 }
@@ -757,6 +890,7 @@ void RaftNode<StateMachine, Command>::run_background_ping() {
         }
         case RaftTimerStatus::ENABLED: {
           RAFT_LOG("leader timer triggered");
+          RAFT_LOG("sending pings");
           for (int i = 0; i < node_configs.size(); i++) {
             if (i == my_id) continue;
             std::unique_lock<std::mutex> lock(this->mtx);
