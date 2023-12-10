@@ -327,10 +327,11 @@ void RaftNode<StateMachine, Command>::change_role(
                 RaftTimerStatus::RESET, caller_holding_follower_mtx);
       set_timer(leader_timer_mtx, leader_timer_cv, leader_timer_status,
                 RaftTimerStatus::DISABLED, caller_holding_leader_mtx);
-      current_term++;
+      change_term(current_term + 1);
       candidate_vote_cnt = 1;
       voted = true;
       voted_for = my_id;
+      this->log_storage->set_voted_for(my_id);
       int cluster_size = node_configs.size();
       for (size_t i = 0; i < cluster_size; i++) {
         has_voted_for_this[i] = false;
@@ -344,7 +345,9 @@ void RaftNode<StateMachine, Command>::change_role(
 template <typename StateMachine, typename Command>
 void RaftNode<StateMachine, Command>::change_term(int new_term) {
   current_term = new_term;
+  this->log_storage->set_current_term(new_term);
   voted = false;
+  this->log_storage->set_voted_for(-1);
 }
 
 /******************************************************************
@@ -359,10 +362,16 @@ auto RaftNode<StateMachine, Command>::start() -> int {
   // rpc_server->run();
   thread_pool = std::make_unique<ThreadPool>(4);
 
-  RAFT_LOG("starting");
+  RAFT_LOG("*********starting*********");
   log_storage =
       std::make_unique<RaftLog<Command>>(std::make_shared<BlockManager>(
           "/tmp/raft_log/raft_data_" + std::to_string(my_id)));
+  voted_for = log_storage->get_voted_for();
+  voted = (voted_for != -1);
+  current_term = log_storage->get_current_term();
+  RAFT_LOG("recovered %d logs, voted_for: %d, current_term: %d",
+           log_storage->entry_cnt(), voted_for, current_term);
+  commit_index = 0;
   // TODO: init state machine
   state = std::make_unique<StateMachine>();
 
@@ -483,6 +492,7 @@ auto RaftNode<StateMachine, Command>::request_vote(RequestVoteArgs args)
        args.last_log_index >= log_storage->entry_cnt())) {
     voted = true;
     voted_for = args.candidate_id;
+    this->log_storage->set_voted_for(args.candidate_id);
     return RequestVoteReply{args.term, true};
   }
 
@@ -548,15 +558,20 @@ auto RaftNode<StateMachine, Command>::append_entries(
   if (arg.prev_log_index != 0 &&
       (arg.prev_log_index > entry_cnt ||
        log_storage->get_entry(arg.prev_log_index).term != arg.prev_log_term)) {
-    RAFT_LOG("rejecting append_entries because of inconsistency");
+    RAFT_LOG(
+        "rejecting append_entries because of inconsistency, prev_log_index = "
+        "%d, prev_log_term = %d",
+        arg.prev_log_index, arg.prev_log_term);
     return AppendEntriesReply{current_term, false};
   }
 
   RAFT_LOG(
       "accepting append_entries, entries cnt: %d, current commit_index: %d, "
-      "leader's commit index: %d",
+      "leader's commit index: %d, prev_log_index: %d, prev_log_term: %d, "
+      "current entries cnt: %d",
       static_cast<int>(arg.log_entries.size()), commit_index,
-      arg.leader_commit_index);
+      arg.leader_commit_index, arg.prev_log_index, arg.prev_log_term,
+      entry_cnt);
 
   int current_log_index = arg.prev_log_index + 1;
 
@@ -571,6 +586,7 @@ auto RaftNode<StateMachine, Command>::append_entries(
     for (int i = commit_index + 1; i <= arg.leader_commit_index; i++) {
       RaftLogEntry<Command> entry = log_storage->get_entry(i);
       Command command = entry.command;
+      RAFT_LOG("applying log entry %d", i);
       state->apply_log(command);
     }
     commit_index = arg.leader_commit_index;
@@ -603,7 +619,27 @@ void RaftNode<StateMachine, Command>::handle_append_entries_reply(
       return;
     }
     // TODO: recursive send when inconsistency happens
-    next_index[node_id] = std::min(next_index[node_id], arg.prev_log_index);
+    RAFT_LOG(
+        "append_entries rejected because of inconsistency, changing "
+        "next_index[%d] from %d to %d",
+        node_id, next_index[node_id], arg.prev_log_index);
+    if (arg.prev_log_index < next_index[node_id]) {
+      next_index[node_id] = arg.prev_log_index;
+      int prev_log_index = next_index[node_id] - 1;
+      int prev_log_term = log_storage->get_entry(prev_log_index).term;
+      int current_max_log_index = log_storage->entry_cnt();
+      if (prev_log_index == current_max_log_index) return;
+      std::vector<RaftLogEntry<Command>> log_entries;
+      for (int idx = prev_log_index + 1; idx <= current_max_log_index; idx++) {
+        log_entries.push_back(log_storage->get_entry(idx));
+      }
+      thread_pool->enqueue([=]() {
+        send_append_entries(
+            node_id, AppendEntriesArgs<Command>{current_term, my_id, prev_log_index,
+                                          prev_log_term, log_entries,
+                                          this->commit_index});
+      });
+    }
   }
 
   return;
@@ -651,12 +687,14 @@ void RaftNode<StateMachine, Command>::send_request_vote(int target_id,
 template <typename StateMachine, typename Command>
 void RaftNode<StateMachine, Command>::send_append_entries(
     int target_id, AppendEntriesArgs<Command> arg) {
-  RAFT_LOG("send_append_entries to %d", target_id);
+  RAFT_LOG("send_append_entries to %d, prev_log_index: %d", target_id,
+           arg.prev_log_index);
   std::unique_lock<std::mutex> clients_lock(clients_mtx);
   if (rpc_clients_map[target_id] == nullptr ||
       rpc_clients_map[target_id]->get_connection_state() !=
           rpc::client::connection_state::connected) {
-    RAFT_LOG("send_append_entries: %d not connected or null", target_id);
+    if (thread_pool)
+      RAFT_LOG("send_append_entries: %d not connected or null", target_id);
     return;
   }
 
@@ -837,14 +875,15 @@ void RaftNode<StateMachine, Command>::run_background_apply() {
           }
         }
         if (is_able_to_commit) {
-          RAFT_LOG("log index %d is able to commit, updating commit_index",
-                   idx);
           if (idx > commit_index) {
+            RAFT_LOG("log index %d is able to commit, updating commit_index",
+                     idx);
             for (int index_to_apply = commit_index + 1; index_to_apply <= idx;
                  index_to_apply++) {
               RaftLogEntry<Command> entry =
                   log_storage->get_entry(index_to_apply);
               Command command = entry.command;
+              RAFT_LOG("applying log entry %d", index_to_apply);
               state->apply_log(command);
             }
             commit_index = idx;
