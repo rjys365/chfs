@@ -482,7 +482,8 @@ void RaftNode<StateMachine, Command>::handle_request_vote_reply(
       has_voted_for_this[target] = true;
     }
     RAFT_LOG("current votes: %d", candidate_vote_cnt);
-    if (candidate_vote_cnt >= cluster_size / 2) {
+    // ATTENTION: majority is ">total/2"!!!
+    if (candidate_vote_cnt > cluster_size / 2) {
       change_role(RaftRole::Leader);
     }
   } else {
@@ -758,9 +759,15 @@ void RaftNode<StateMachine, Command>::run_background_ping() {
           RAFT_LOG("leader timer triggered");
           for (int i = 0; i < node_configs.size(); i++) {
             if (i == my_id) continue;
+            std::unique_lock<std::mutex> lock(this->mtx);
             thread_pool->enqueue([=]() {
               send_append_entries(i, AppendEntriesArgs<Command>{
-                                         current_term, my_id, 0, 0, {}, 0});
+                                         current_term,
+                                         my_id,
+                                         this->log_storage->entry_cnt(),
+                                         this->log_storage->last_log_term(),
+                                         {},
+                                         this->commit_index});
             });
 
             // TODO: change prev_log_index prev_log_term to real value
