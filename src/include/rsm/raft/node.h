@@ -205,6 +205,11 @@ class RaftNode {
   void change_role(RaftRole new_role, bool caller_holding_leader_mtx = false,
                    bool caller_holding_follower_mtx = false);
   void change_term(int new_term);
+
+  void send_append_entries_to(int target_id);
+
+  // snapshot related
+  std::vector<uint8_t> snapshot_buffer;
 };
 
 template <typename StateMachine, typename Command>
@@ -350,6 +355,39 @@ void RaftNode<StateMachine, Command>::change_term(int new_term) {
   this->log_storage->set_voted_for(-1);
 }
 
+template <typename StateMachine, typename Command>
+void RaftNode<StateMachine, Command>::send_append_entries_to(int target_id) {
+  // only leader needs to call this
+  if (this->log_storage->need_install_snapshot(next_index[target_id])) {
+    RAFT_LOG("sending install_snapshot to %d, idx: %d", target_id, next_index[target_id]);
+    int last_included_index =
+        this->log_storage->get_snapshot_last_included_index();
+    int last_included_term =
+        this->log_storage->get_snapshot_last_included_term();
+    std::vector<u8> snapshot_data = this->log_storage->get_snapshot();
+    send_install_snapshot(
+        target_id,
+        InstallSnapshotArgs{current_term, my_id, last_included_index,
+                            last_included_term, 0, snapshot_data, true});
+  } else {
+    RAFT_LOG("sending append_entries to %d, idx:%d", target_id, next_index[target_id]);
+    int prev_log_index = next_index[target_id] - 1;
+    int prev_log_term = log_storage->get_entry(prev_log_index).term;
+    int current_max_log_index = log_storage->entry_cnt();
+    if (prev_log_index == current_max_log_index) return;
+    std::vector<RaftLogEntry<Command>> log_entries;
+    for (int idx = prev_log_index + 1; idx <= current_max_log_index; idx++) {
+      log_entries.push_back(log_storage->get_entry(idx));
+    }
+    thread_pool->enqueue([=]() {
+      send_append_entries(
+          target_id, AppendEntriesArgs<Command>{
+                         current_term, my_id, prev_log_index, prev_log_term,
+                         log_entries, this->commit_index});
+    });
+  }
+}
+
 /******************************************************************
 
                         RPC Interfaces
@@ -371,9 +409,23 @@ auto RaftNode<StateMachine, Command>::start() -> int {
   current_term = log_storage->get_current_term();
   RAFT_LOG("recovered %d logs, voted_for: %d, current_term: %d",
            log_storage->entry_cnt(), voted_for, current_term);
+
   commit_index = 0;
-  // TODO: init state machine
   state = std::make_unique<StateMachine>();
+
+  int snapshot_last_included_index =
+      log_storage->get_snapshot_last_included_index();
+  if (snapshot_last_included_index != 0) {
+    // int snapshot_last_included_term =
+    // log_storage->get_snapshot_last_included_term();
+    RAFT_LOG("recovering from snapshot, commit_index: %d",
+             snapshot_last_included_index);
+    std::vector<u8> snapshot_data = log_storage->get_snapshot();
+    state->apply_snapshot(snapshot_data);
+    commit_index = snapshot_last_included_index;
+  }
+
+  snapshot_buffer.clear();
 
   for (int i = 0; i < node_configs.size(); i++) {
     rpc_clients_map[i] = std::make_unique<RpcClient>(
@@ -451,13 +503,24 @@ auto RaftNode<StateMachine, Command>::new_command(std::vector<u8> cmd_data,
 template <typename StateMachine, typename Command>
 auto RaftNode<StateMachine, Command>::save_snapshot() -> bool {
   /* Lab3: Your code here */
+  RAFT_LOG("saving snapshot");
+  if (log_storage->need_install_snapshot(commit_index)) {
+    // no need to create new snapshot
+    return false;
+  }
+  std::vector<u8> snapshot_data = state->snapshot();
+  int last_included_index = commit_index;
+  int last_included_term = log_storage->get_entry(last_included_index).term;
+  log_storage->set_snapshot_last_included_index_and_prune(last_included_index);
+  log_storage->set_snapshot_last_included_term(last_included_term);
+  log_storage->set_snapshot(snapshot_data);
   return true;
 }
 
 template <typename StateMachine, typename Command>
 auto RaftNode<StateMachine, Command>::get_snapshot() -> std::vector<u8> {
   /* Lab3: Your code here */
-  return std::vector<u8>();
+  return state->snapshot();
 }
 
 /******************************************************************
@@ -625,20 +688,7 @@ void RaftNode<StateMachine, Command>::handle_append_entries_reply(
         node_id, next_index[node_id], arg.prev_log_index);
     if (arg.prev_log_index < next_index[node_id]) {
       next_index[node_id] = arg.prev_log_index;
-      int prev_log_index = next_index[node_id] - 1;
-      int prev_log_term = log_storage->get_entry(prev_log_index).term;
-      int current_max_log_index = log_storage->entry_cnt();
-      if (prev_log_index == current_max_log_index) return;
-      std::vector<RaftLogEntry<Command>> log_entries;
-      for (int idx = prev_log_index + 1; idx <= current_max_log_index; idx++) {
-        log_entries.push_back(log_storage->get_entry(idx));
-      }
-      thread_pool->enqueue([=]() {
-        send_append_entries(
-            node_id, AppendEntriesArgs<Command>{current_term, my_id, prev_log_index,
-                                          prev_log_term, log_entries,
-                                          this->commit_index});
-      });
+      send_append_entries_to(node_id);
     }
   }
 
@@ -649,7 +699,48 @@ template <typename StateMachine, typename Command>
 auto RaftNode<StateMachine, Command>::install_snapshot(InstallSnapshotArgs args)
     -> InstallSnapshotReply {
   /* Lab3: Your code here */
-  return InstallSnapshotReply();
+  RAFT_LOG(
+      "received install_snapshot from %d, last_included_index: %d, "
+      "last_included_term: %d",
+      args.leader_id, args.last_included_index, args.last_included_term);
+  std::unique_lock<std::mutex> lock(this->mtx);
+  if (args.term < current_term) {
+    snapshot_buffer.clear();
+    return InstallSnapshotReply{current_term};
+  }
+  change_role(RaftRole::Follower);  // the leader is alive
+  if (args.term > current_term) {
+    change_term(args.term);
+  }
+  if (args.offset == 0) {
+    snapshot_buffer.clear();
+  }
+  size_t new_size = args.offset + args.data.size();
+  snapshot_buffer.resize(new_size);
+  for (size_t i = args.offset; i < new_size; i++) {
+    snapshot_buffer[i] = args.data[i - args.offset];
+  }
+  if (!args.done) {
+    return InstallSnapshotReply{current_term};
+  }
+  RaftLogEntry<Command> entry =
+      log_storage->get_entry(args.last_included_index);
+  if (entry.term == args.last_included_term) {
+    log_storage->set_snapshot_last_included_index_and_prune(
+        args.last_included_index);
+    log_storage->set_snapshot_last_included_term(args.last_included_term);
+    log_storage->set_snapshot(snapshot_buffer);
+    snapshot_buffer.clear();
+  } else {
+    state->apply_snapshot(snapshot_buffer);
+    log_storage->clear_entries();
+    log_storage->set_snapshot_last_included_index(args.last_included_index);
+    log_storage->set_snapshot_last_included_term(args.last_included_term);
+    log_storage->set_snapshot(snapshot_buffer);
+    commit_index=args.last_included_index;
+  }
+
+  return InstallSnapshotReply{current_term};
 }
 
 template <typename StateMachine, typename Command>
@@ -657,6 +748,15 @@ void RaftNode<StateMachine, Command>::handle_install_snapshot_reply(
     int node_id, const InstallSnapshotArgs arg,
     const InstallSnapshotReply reply) {
   /* Lab3: Your code here */
+  if (reply.term > current_term) {
+    change_term(reply.term);
+    change_role(RaftRole::Follower);
+    return;
+  }
+  if (arg.done) {
+    next_index[node_id] = arg.last_included_index + 1;
+    match_index[node_id] = arg.last_included_index;
+  }
   return;
 }
 
@@ -814,21 +914,7 @@ void RaftNode<StateMachine, Command>::run_background_commit() {
       }
       for (int i = 0; i < node_configs.size(); i++) {
         if (i == my_id) continue;
-        int prev_log_index = next_index[i] - 1;
-        int prev_log_term = log_storage->get_entry(prev_log_index).term;
-        int current_max_log_index = log_storage->entry_cnt();
-        if (prev_log_index == current_max_log_index) continue;
-        std::vector<RaftLogEntry<Command>> log_entries;
-        for (int idx = prev_log_index + 1; idx <= current_max_log_index;
-             idx++) {
-          log_entries.push_back(log_storage->get_entry(idx));
-        }
-        thread_pool->enqueue([=]() {
-          send_append_entries(
-              i, AppendEntriesArgs<Command>{current_term, my_id, prev_log_index,
-                                            prev_log_term, log_entries,
-                                            this->commit_index});
-        });
+        send_append_entries_to(i);
       }
     }
   }
