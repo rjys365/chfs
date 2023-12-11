@@ -11,9 +11,10 @@
 
 #pragma once
 
-#include <iterator>
 #include <string.h>
 #include <time.h>
+
+#include <iterator>
 
 #include "common/config.h"
 #include "common/macros.h"
@@ -22,6 +23,8 @@
 #include "block/manager.h"
 
 namespace chfs {
+// remember to alse update this in metadata_server.h if it is changed in the future
+using BlockInfo=std::tuple<block_id_t, mac_id_t, version_t>;
 
 // The first block is reserved as super block
 // So block IDs should be larger than 0
@@ -42,7 +45,7 @@ class FileOperation;
 class FileAttr {
   friend class Inode;
 
-public:
+ public:
   u64 atime = 0;
   u64 mtime = 0;
   u64 ctime = 0;
@@ -78,6 +81,7 @@ class Inode {
   friend class InodeIterator;
   friend class InodeManager;
   friend class FileOperation;
+  friend class MetadataServer;
 
   InodeType type;
   FileAttr inner_attr;
@@ -88,10 +92,10 @@ class Inode {
   u32 nblocks;
   // The actual number of blocks should be larger,
   // which is dynamically calculated based on the block size
-public:
+ public:
   [[maybe_unused]] block_id_t blocks[0];
 
-public:
+ public:
   /**
    * Create a new inode for a file or directory
    * @param type: the inode type
@@ -125,6 +129,14 @@ public:
   auto get_nblocks() const -> u32 { return nblocks; }
 
   /**
+   * Get the number of blocks of the modified inodes in the metedata servers
+  */
+  auto get_nblocks_metadata_server() const -> u32 {
+    return static_cast<u32>(static_cast<u64>(block_size - sizeof(Inode)) /
+                            sizeof(BlockInfo));
+  }
+
+  /**
    * Get the number of direct blocks stored in this inode
    */
   auto get_direct_block_num() const -> u32 { return nblocks - 1; }
@@ -144,6 +156,15 @@ public:
                static_cast<u64>(block_size) +
            static_cast<u64>(this->get_nblocks() - 1) *
                static_cast<u64>(block_size);
+  }
+
+  /**
+   * Get the maximum file size of modified inodes in the metedata servers
+   */
+  auto max_file_sz_supported_metadata_server() const -> u64 {
+    return static_cast<u64>(static_cast<u64>(block_size - sizeof(Inode)) /
+                            sizeof(BlockInfo)) *
+           static_cast<u64>(block_size);
   }
 
   /**
@@ -186,8 +207,7 @@ public:
    * ```
    */
   block_id_t &operator[](size_t index) {
-    if (index >= this->nblocks)
-      throw std::out_of_range("Index out of range");
+    if (index >= this->nblocks) throw std::out_of_range("Index out of range");
     return this->blocks[index];
   }
 
@@ -249,7 +269,7 @@ class InodeIterator {
 
   InodeIterator(Inode *inode) : InodeIterator(inode, 0) {}
 
-public:
+ public:
   InodeIterator &operator++() {
     cur_idx++;
     return *this;
@@ -270,4 +290,4 @@ public:
   block_id_t &operator*() const { return inode->blocks[cur_idx]; }
 };
 
-} // namespace chfs
+}  // namespace chfs

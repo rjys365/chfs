@@ -33,6 +33,7 @@ class FileOperation;
  */
 class InodeManager {
   friend class FileOperation;
+  friend class MetadataServer;
   // We will modify the block manager
   std::shared_ptr<BlockManager> bm;
   u64 max_inode_supported;
