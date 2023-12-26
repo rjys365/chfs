@@ -18,8 +18,9 @@ namespace mapReduce {
 
     enum mr_tasktype {
         NONE = 0,
-        MAP,
-        REDUCE
+        MAP = 1,
+        REDUCE = 2,
+        COMBINE = 3
     };
 
     std::vector<KeyVal> Map(const std::string &content);
@@ -40,6 +41,18 @@ namespace mapReduce {
                                                        resultFile(resultFile), client(std::move(client)) {}
     };
 
+    struct Task{
+        int taskType; // 0: none, 1: map, 2: reduce, 3: combine
+        std::string mapFileName;
+        int mapFileIdx;
+        int reduceIdx;
+        int mapFileCnt;
+        int reduceFileCnt;
+        std::string combineFileName;
+
+        MSGPACK_DEFINE(taskType, mapFileName, mapFileIdx, reduceIdx, mapFileCnt, reduceFileCnt, combineFileName)
+    };
+
     class SequentialMapReduce {
     public:
         SequentialMapReduce(std::shared_ptr<chfs::ChfsClient> client, const std::vector<std::string> &files, std::string resultFile);
@@ -54,7 +67,7 @@ namespace mapReduce {
     class Coordinator {
     public:
         Coordinator(MR_CoordinatorConfig config, const std::vector<std::string> &files, int nReduce);
-        std::tuple<int, int> askTask(int);
+        Task askTask();
         int submitTask(int taskType, int index);
         bool Done();
 
@@ -63,6 +76,13 @@ namespace mapReduce {
         std::mutex mtx;
         bool isFinished;
         std::unique_ptr<chfs::RpcServer> rpc_server;
+        int current_stage = 0;
+        std::vector<uint8_t> map_allocated;
+        std::vector<uint8_t> map_finished;
+        std::vector<uint8_t> reduce_allocated;
+        std::vector<uint8_t> reduce_finished;
+        int nReduce;
+        std::string outPutFile;
     };
 
     class Worker {
@@ -72,9 +92,10 @@ namespace mapReduce {
         void stop();
 
     private:
-        void doMap(int index, const std::string &filename);
+        void doMap(int index, const std::string &filename, int nReduce);
         void doReduce(int index, int nfiles);
-        void doSubmit(mr_tasktype taskType, int index);
+        void doSubmit(int taskType, int index);
+        void doCombine(int nReduce, std::string outputFile);
 
         std::string outPutFile;
         std::unique_ptr<chfs::RpcClient> mr_client;
