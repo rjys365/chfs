@@ -359,7 +359,8 @@ template <typename StateMachine, typename Command>
 void RaftNode<StateMachine, Command>::send_append_entries_to(int target_id) {
   // only leader needs to call this
   if (this->log_storage->need_install_snapshot(next_index[target_id])) {
-    RAFT_LOG("sending install_snapshot to %d, idx: %d", target_id, next_index[target_id]);
+    RAFT_LOG("sending install_snapshot to %d, idx: %d", target_id,
+             next_index[target_id]);
     int last_included_index =
         this->log_storage->get_snapshot_last_included_index();
     int last_included_term =
@@ -370,7 +371,8 @@ void RaftNode<StateMachine, Command>::send_append_entries_to(int target_id) {
         InstallSnapshotArgs{current_term, my_id, last_included_index,
                             last_included_term, 0, snapshot_data, true});
   } else {
-    RAFT_LOG("sending append_entries to %d, idx:%d", target_id, next_index[target_id]);
+    RAFT_LOG("sending append_entries to %d, idx:%d", target_id,
+             next_index[target_id]);
     int prev_log_index = next_index[target_id] - 1;
     int prev_log_term = log_storage->get_entry(prev_log_index).term;
     int current_max_log_index = log_storage->entry_cnt();
@@ -737,7 +739,7 @@ auto RaftNode<StateMachine, Command>::install_snapshot(InstallSnapshotArgs args)
     log_storage->set_snapshot_last_included_index(args.last_included_index);
     log_storage->set_snapshot_last_included_term(args.last_included_term);
     log_storage->set_snapshot(snapshot_buffer);
-    commit_index=args.last_included_index;
+    commit_index = args.last_included_index;
   }
 
   return InstallSnapshotReply{current_term};
@@ -790,6 +792,7 @@ void RaftNode<StateMachine, Command>::send_append_entries(
   RAFT_LOG("send_append_entries to %d, prev_log_index: %d", target_id,
            arg.prev_log_index);
   std::unique_lock<std::mutex> clients_lock(clients_mtx);
+  if (this->role != RaftRole::Leader) return;
   if (rpc_clients_map[target_id] == nullptr ||
       rpc_clients_map[target_id]->get_connection_state() !=
           rpc::client::connection_state::connected) {
@@ -1057,12 +1060,14 @@ void RaftNode<StateMachine, Command>::set_network(
 
   /* turn off network */
   if (!network_availability[my_id]) {
+    RAFT_LOG("DISABLING node %d", my_id);
     for (auto &&client : rpc_clients_map) {
       if (client.second != nullptr) client.second.reset();
     }
 
     return;
   }
+  RAFT_LOG("ENABLING node %d", my_id);
 
   for (auto node_network : network_availability) {
     int node_id = node_network.first;
